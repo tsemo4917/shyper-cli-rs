@@ -9,6 +9,7 @@
 // See the Mulan PSL v2 for more details.
 
 use libc::{c_char, c_int, c_ulong, c_ulonglong, uintptr_t, SIGUSR1};
+use nix::errno::Errno;
 use serde::{Deserialize, Serialize};
 use signal_hook::iterator::Signals;
 use std::{
@@ -240,18 +241,12 @@ pub fn init_daemon() {
     unsafe {
         // Set process id, in case kernel module can send signal to cli
         if shyper_ioctl!(0x1002, c_ulong::from(pid)) < 0 {
-            error!(
-                "ioctl set pid failed: errcode = {}",
-                *libc::__errno_location()
-            );
+            error!("ioctl set pid failed: errcode = {}", Errno::last());
             return;
         }
         // Get vmid
         if shyper_ioctl!(0x1004, &mut vmid as *mut c_int) < 0 {
-            error!(
-                "ioctl get vmid failed: errcode = {}",
-                *libc::__errno_location()
-            );
+            error!("ioctl get vmid failed: errcode = {}", Errno::last());
             return;
         }
     }
@@ -272,12 +267,10 @@ pub fn init_daemon() {
     }
 }
 
-pub fn config_daemon(path: String) -> Result<(), String> {
+pub fn config_daemon(path: String) -> Result<(), Box<dyn std::error::Error>> {
     info!("Start Shyper-cli daemon configure");
-    let json_str = fs::read_to_string(path.clone())
-        .map_err(|err| format!("Open json file {} err: {}", path.clone(), err))?;
-    let config = serde_json::from_str::<DaemonConfig>(&json_str)
-        .map_err(|err| format!("Parse json err: {}", err))?;
+    let json_str = fs::read_to_string(path.clone())?;
+    let config = serde_json::from_str::<DaemonConfig>(&json_str)?;
     debug!("config is {:?}", config);
 
     let mut disk_cnt = 0;

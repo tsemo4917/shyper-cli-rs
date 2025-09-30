@@ -9,22 +9,13 @@
 // See the Mulan PSL v2 for more details.
 
 use std::{
-    ffi::CString,
+    ffi::CStr,
     fs::File,
     io::{Read, Seek},
     mem,
-    slice::from_raw_parts_mut,
 };
 
-use libc::{c_int, c_uchar, c_ulong, c_void, sysconf, _SC_PAGE_SIZE};
-
-pub fn bool_to_cint(var: bool) -> c_int {
-    if var {
-        c_int::from(1)
-    } else {
-        c_int::from(0)
-    }
-}
+use nix::unistd;
 
 pub fn file_size(path: &String) -> Result<u64, String> {
     if let Ok(file) = File::open(&path) {
@@ -39,16 +30,8 @@ pub fn file_size(path: &String) -> Result<u64, String> {
 }
 
 pub fn cstr_arr_to_string(buf: &[u8]) -> String {
-    let mut vec: Vec<u8> = Vec::new();
-    for i in buf {
-        if *i == 0 {
-            // terminate char
-            break;
-        } else {
-            vec.push(*i);
-        }
-    }
-    unsafe { CString::from_vec_unchecked(vec).to_string_lossy().into() }
+    let cstr = CStr::from_bytes_with_nul(buf).unwrap();
+    cstr.to_str().unwrap().to_owned()
 }
 
 pub fn string_to_cstr_arr(s: String) -> [u8; 32] {
@@ -66,8 +49,10 @@ pub fn virt_to_phys_user(vaddr: u64) -> Result<u64, String> {
     let mut file =
         File::open(&pagemap_path).map_err(|err| format!("Open {} err: {}", &pagemap_path, err))?;
 
-    let page_size: usize = unsafe { sysconf(_SC_PAGE_SIZE) } as usize;
-    let offset = ((vaddr as usize) / page_size) * (mem::size_of::<c_ulong>() as usize);
+    let page_size = unistd::sysconf(unistd::SysconfVar::PAGE_SIZE)
+        .unwrap()
+        .unwrap() as usize;
+    let offset = ((vaddr as usize) / page_size) * (mem::size_of::<*const ()>() as usize);
 
     if file.seek(std::io::SeekFrom::Start(offset as u64)).is_err() {
         return Err(format!(
@@ -76,19 +61,12 @@ pub fn virt_to_phys_user(vaddr: u64) -> Result<u64, String> {
         ));
     }
 
-    let mut pagemap_entry: c_ulong = 0;
-    if file
-        .read_exact(unsafe {
-            from_raw_parts_mut(
-                &mut pagemap_entry as *mut _ as *mut u8,
-                mem::size_of::<c_ulong>(),
-            )
-        })
-        .is_err()
-    {
+    let mut entry = [0u8; 8];
+    if file.read_exact(&mut entry).is_err() {
         return Err(format!("Read page table entry err"));
     }
 
+    let pagemap_entry = u64::from_le_bytes(entry);
     if (pagemap_entry & (1 << 63)) == 0 {
         return Err(format!(
             "Virtual Address 0x{:#x} converts to paddr err: page not in memory",
@@ -105,25 +83,6 @@ pub fn virt_to_phys_user(vaddr: u64) -> Result<u64, String> {
     let pfn = pagemap_entry & ((1 << 55) - 1);
     let paddr = pfn * (page_size as u64) + vaddr % (page_size as u64);
     Ok(paddr)
-}
-
-pub fn check_cache_address(cache_va: *mut c_void, len: u64) -> Result<(), String> {
-    let cache_va = cache_va as *mut c_uchar;
-    // write_bytes
-    for i in 0..len {
-        unsafe {
-            *cache_va.add(i as usize) = (i % 128) as u8;
-        }
-    }
-    // read and check bytes
-    for i in 0..len {
-        unsafe {
-            if *cache_va.add(i as usize) != (i % 128) as u8 {
-                return Err(format!("check_cache_address: Mismatch at {} offset", i));
-            }
-        }
-    }
-    Ok(())
 }
 
 pub fn string_to_u64(s: String) -> Result<u64, std::num::ParseIntError> {

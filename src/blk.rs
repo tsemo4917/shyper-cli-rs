@@ -9,16 +9,29 @@
 // See the Mulan PSL v2 for more details.
 
 use libc::{
-    c_uint, c_void, memset, mmap, open, size_t, MAP_ANONYMOUS, MAP_HUGETLB, MAP_PRIVATE, O_DIRECT,
-    O_RDWR, PROT_READ, PROT_WRITE, S_IFBLK, S_IFMT,
+    c_uint, c_void, mmap, size_t, MAP_ANONYMOUS, MAP_HUGETLB, MAP_PRIVATE, PROT_READ, PROT_WRITE,
+    S_IFBLK, S_IFMT,
+};
+use nix::{
+    fcntl::{open, OFlag},
+    sys::{stat::Mode, uio},
 };
 use once_cell::sync::OnceCell;
-use std::{fs, os::linux::fs::MetadataExt, process::Command, slice::from_raw_parts, sync::Mutex};
+use std::{
+    fs,
+    os::{
+        fd::{BorrowedFd, RawFd},
+        linux::fs::MetadataExt,
+    },
+    process::Command,
+    slice,
+    sync::Mutex,
+};
 
 use crate::{
     daemon::generate_hvc_mode,
     ioctl_arg::{IOCTL_SYS, IOCTL_SYS_APPEND_MED_BLK},
-    util::{check_cache_address, cstr_arr_to_string, string_to_cstr_arr, virt_to_phys_user},
+    util::{cstr_arr_to_string, string_to_cstr_arr, virt_to_phys_user},
 };
 
 pub const HUGE_TLB_MAX: usize = 32 * 1024 * 1024;
@@ -41,7 +54,7 @@ pub struct MediatedBlkCfg {
 
 // Set this only once in the config_daemon
 pub static MED_BLK_LIST: OnceCell<Vec<MediatedBlkCfg>> = OnceCell::new();
-static IMG_FILE_FDS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+static IMG_FILE_FDS: Mutex<Vec<RawFd>> = Mutex::new(Vec::new());
 
 // Read the count blocks of the blk id starting from the lba sector
 // Note: do not exceed cache_size!
@@ -52,6 +65,8 @@ fn blk_read(blk_id: u16, lba: u64, mut count: u64) {
     let binding2 = IMG_FILE_FDS.lock().unwrap();
     let img_file = binding2.get(blk_id as usize).unwrap();
 
+    let fd = unsafe { BorrowedFd::borrow_raw(*img_file) };
+
     if count > blk_cfg.dma_block_max {
         warn!(
             "blk_read count {} > dma_block_max {}, shrink count to {}",
@@ -60,28 +75,27 @@ fn blk_read(blk_id: u16, lba: u64, mut count: u64) {
         count = blk_cfg.dma_block_max;
     }
 
-    unsafe {
-        let read_len = libc::pread(
-            *img_file,
-            blk_cfg.cache_va as *mut c_void,
-            count as usize * BLOCK_SIZE,
-            lba as i64 * BLOCK_SIZE as i64,
-        );
+    let buf = unsafe {
+        slice::from_raw_parts_mut(blk_cfg.cache_va as *mut u8, count as usize * BLOCK_SIZE)
+    };
 
-        if read_len < 0 {
-            warn!(
-                "read lba {:#x} size {:#x} failed!",
-                lba,
-                count * BLOCK_SIZE as u64
-            );
-        } else if read_len != (count as isize * BLOCK_SIZE as isize) {
-            warn!(
-                "read lba {:#x} size {:#x} failed! read_len = {:#x}",
-                lba,
-                count * BLOCK_SIZE as u64,
-                read_len
-            );
+    match uio::pread(fd, buf, lba as i64 * BLOCK_SIZE as i64) {
+        Ok(read_len) => {
+            if read_len != (count as usize * BLOCK_SIZE) {
+                warn!(
+                    "read lba {:#x} size {:#x} failed! read_len = {:#x}",
+                    lba,
+                    count * BLOCK_SIZE as u64,
+                    read_len
+                );
+            }
         }
+        Err(err) => warn!(
+            "read lba {:#x} size {:#x} failed: {}!",
+            lba,
+            count * BLOCK_SIZE as u64,
+            err
+        ),
     }
 }
 
@@ -91,6 +105,8 @@ fn blk_write(blk_id: u16, lba: u64, mut count: u64) {
     let binding2 = IMG_FILE_FDS.lock().unwrap();
     let img_file = binding2.get(blk_id as usize).unwrap();
 
+    let fd = unsafe { BorrowedFd::borrow_raw(*img_file) };
+
     if count > blk_cfg.dma_block_max {
         warn!(
             "blk_write count {} > dma_block_max {}, shrink count to {}",
@@ -99,64 +115,57 @@ fn blk_write(blk_id: u16, lba: u64, mut count: u64) {
         count = blk_cfg.dma_block_max;
     }
 
-    unsafe {
-        let write_len = libc::pwrite(
-            *img_file,
-            blk_cfg.cache_va as *const c_void,
-            count as usize * BLOCK_SIZE,
-            lba as i64 * BLOCK_SIZE as i64,
-        );
+    let buf =
+        unsafe { slice::from_raw_parts(blk_cfg.cache_va as *mut u8, count as usize * BLOCK_SIZE) };
 
-        if write_len < 0 {
-            warn!(
-                "write lba {:#x} size {:#x} failed!",
-                lba,
-                count * BLOCK_SIZE as u64
-            );
-        } else if write_len != (count as isize * BLOCK_SIZE as isize) {
-            warn!(
-                "write lba {:#x} size {:#x} failed! write_len = {:#x}",
-                lba,
-                count * BLOCK_SIZE as u64,
-                write_len
-            );
+    match uio::pwrite(fd, buf, lba as i64 * BLOCK_SIZE as i64) {
+        Ok(write_len) => {
+            if write_len != (count as usize * BLOCK_SIZE) {
+                warn!(
+                    "write lba {:#x} size {:#x} failed! write_len = {:#x}",
+                    lba,
+                    count * BLOCK_SIZE as u64,
+                    write_len
+                );
+            }
         }
+        Err(err) => warn!(
+            "write lba {:#x} size {:#x} failed: {}!",
+            lba,
+            count * BLOCK_SIZE as u64,
+            err
+        ),
     }
 }
 
 // Read/write sector 0 of the disk to test whether the disk is ready
 fn blk_try_rw(blk_id: u16) -> Result<(), String> {
-    let mut origin_data: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
+    let mut origin_data = [0; BLOCK_SIZE];
     let binding = MED_BLK_LIST.get().unwrap();
     let blk = binding.get(blk_id as usize).unwrap();
 
+    let cache = unsafe { slice::from_raw_parts_mut(blk.cache_va as *mut u8, BLOCK_SIZE) };
+
     // Read origin data, and save it in origin_data
     blk_read(blk_id, 0, 1);
-    unsafe {
-        origin_data.clone_from(
-            from_raw_parts(blk.cache_va as *const u8, BLOCK_SIZE)
-                .try_into()
-                .unwrap(),
-        );
-    }
+    origin_data.clone_from_slice(cache);
 
-    let cache = blk.cache_va as *mut u8;
-    for i in 0..BLOCK_SIZE {
-        unsafe { *cache.add(i) = (i % 256) as u8 };
+    for (i, mem) in cache.iter_mut().enumerate() {
+        *mem = (i % 256) as u8
     }
     blk_write(blk_id, 0, 1);
 
-    unsafe { memset(cache as *mut c_void, 0, BLOCK_SIZE) };
+    cache.fill(0);
     blk_read(blk_id, 0, 1);
 
     // Check if the data written before is read correctly
-    for i in 0..BLOCK_SIZE {
-        if unsafe { *cache.add(i) } != (i % 256) as u8 {
+    for (i, mem) in cache.iter().enumerate() {
+        if *mem != (i % 256) as u8 {
             return Err(format!("blk {} read write test failed!", blk_id));
         }
     }
 
-    unsafe { cache.copy_from(origin_data.as_ptr(), BLOCK_SIZE) };
+    cache.clone_from_slice(&origin_data);
 
     // Written back
     blk_write(blk_id, 0, 1);
@@ -207,33 +216,29 @@ pub fn mediated_blk_init() {
 
     for i in 0..med_blk_list.len() {
         let cache_size = med_blk_list[i].cache_size;
-        let block_dev_path = med_blk_list[i].block_dev_path.clone();
+        let block_dev_path = cstr_arr_to_string(med_blk_list[i].block_dev_path.as_slice());
+        let name = cstr_arr_to_string(med_blk_list[i].name.as_slice());
         info!(
             "Shyper daemon init blk {} with cache size {}",
-            cstr_arr_to_string(med_blk_list[i].name.as_slice()),
-            cache_size
+            name, cache_size
         );
 
         info!(
             "Shyper daemon init blk {} va {:#x} with cache pa {:#x}",
-            cstr_arr_to_string(med_blk_list[i].name.as_slice()),
-            med_blk_list[i].cache_va as u64,
-            med_blk_list[i].cache_ipa as u64
+            name, med_blk_list[i].cache_va as u64, med_blk_list[i].cache_ipa as u64
         );
 
-        unsafe {
-            let fd = open(block_dev_path.as_ptr() as *const _, O_RDWR | O_DIRECT);
-            if fd < 0 {
-                warn!(
-                    "open block device {} failed: errcode = {}",
-                    cstr_arr_to_string(block_dev_path.as_slice()),
-                    fd
-                );
+        match open(
+            block_dev_path.as_str(),
+            OFlag::O_RDWR | OFlag::O_DIRECT,
+            Mode::empty(),
+        ) {
+            Ok(fd) => img_file_fds[i] = fd,
+            Err(err) => {
+                warn!("open block device {} failed: {}", block_dev_path, err);
                 return;
             }
-            img_file_fds[i] = fd;
         }
-        drop(img_file_fds);
 
         // block_try_rw
         if let Err(err) = blk_try_rw(i as u16) {
@@ -253,7 +258,6 @@ pub fn mediated_blk_init() {
             }
         }
 
-        img_file_fds = IMG_FILE_FDS.lock().unwrap();
         info!(
             "Shyper daemon init blk {} success",
             cstr_arr_to_string(med_blk_list[i].name.clone().as_slice())
@@ -318,11 +322,6 @@ pub fn mediated_blk_add(index: usize, dev: String) -> Result<MediatedBlkCfg, Str
             warn!("mmap cache failed");
             return Err("mmap cache failed".to_string());
         }
-    }
-
-    if let Err(err) = check_cache_address(cache_va, cache_size) {
-        warn!("check cache address failed: {}", err);
-        return Err("check cache address failed".to_string());
     }
 
     let phys_result = virt_to_phys_user(cache_va as u64);

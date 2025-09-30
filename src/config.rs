@@ -8,11 +8,15 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PSL v2 for more details.
 
-use std::{fs::File, io::BufReader, os::fd::RawFd};
+use std::{
+    fs::File,
+    io::{BufReader, Read, Seek},
+    os::fd::RawFd,
+};
 
 use libc::{
-    c_void, close, ioctl, lseek, mmap, munmap, open, MAP_ANONYMOUS, MAP_FAILED, MAP_HUGETLB,
-    MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, SEEK_SET,
+    c_void, ioctl, mmap, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_HUGETLB, MAP_PRIVATE, O_RDONLY,
+    PROT_READ, PROT_WRITE, SEEK_SET,
 };
 use serde::{
     de::{self, Visitor},
@@ -35,7 +39,7 @@ use crate::{
         HVC_CONFIG_UPLOAD_DEVICE_TREE, HVC_CONFIG_UPLOAD_KERNEL_IMAGE,
     },
     ioctl_arg::{IOCTL_SYS, IOCTL_SYS_SET_KERNEL_IMG_NAME},
-    util::{check_cache_address, file_size, string_to_u64, virt_to_phys_user},
+    util::{file_size, string_to_u64, virt_to_phys_user},
 };
 
 const CACHE_MAX: usize = 32 * 1024 * 1024;
@@ -581,12 +585,10 @@ pub fn config_add_vm(config_json: String) -> Result<u64, String> {
     match config_vm_info(vm_cfg_2, vm_id, fd) {
         Ok(_) => {
             info!("Config VM [{}] successfully", vm_id);
-            unsafe { close(fd) };
             Ok(vm_id)
         }
         Err(err) => {
             error!("Config VM [{}] failed: {}", vm_id, err);
-            unsafe { close(fd) };
             config_delete_vm(vm_id);
             Err(err)
         }
@@ -604,10 +606,10 @@ fn copy_file_to_hypervisor(
     let mut copied_size: u64 = 0;
     let mut coping_size: u64;
     let cache_va: *mut c_void;
-    let file_fd: i32;
+
+    let mut file = File::open(&filename).unwrap();
 
     unsafe {
-        file_fd = open(filename.as_ptr() as *const _, O_RDONLY);
         cache_va = mmap(
             0 as *mut c_void,
             CACHE_MAX,
@@ -617,25 +619,13 @@ fn copy_file_to_hypervisor(
             0,
         );
         if cache_va == MAP_FAILED {
-            close(file_fd);
             return Err(String::from("Allocate cache memory error!"));
         }
-    }
-
-    // check whether cache address is valid
-    if let Err(err) = check_cache_address(cache_va, CACHE_MAX as u64) {
-        warn!("Cache address is invalid");
-        unsafe {
-            close(file_fd);
-            munmap(cache_va, CACHE_MAX);
-        }
-        return Err(err);
     }
 
     let cache_ipa = virt_to_phys_user(cache_va as u64).map_err(|err| {
         warn!("Failed to get cache pa\n");
         unsafe {
-            close(file_fd);
             munmap(cache_va, CACHE_MAX);
         }
         err
@@ -644,9 +634,8 @@ fn copy_file_to_hypervisor(
     while copied_size < file_size {
         // set read start is previous read
         unsafe {
-            if lseek(file_fd, copied_size as i64, SEEK_SET) < 0 {
+            if file.seek(std::io::SeekFrom::Start(copied_size)).is_err() {
                 warn!("seek file {} pos {} failed\n", filename, copied_size);
-                close(file_fd);
                 munmap(cache_va, CACHE_MAX);
                 return Err(String::from("lseek err"));
             }
@@ -657,12 +646,13 @@ fn copy_file_to_hypervisor(
                 file_size
             };
 
-            if libc::read(file_fd, cache_va, coping_size as usize) == -1 {
+            let buf = std::slice::from_raw_parts_mut(cache_va as *mut u8, coping_size as usize);
+
+            if file.read(buf).is_err() {
                 warn!(
                     "read kernel image {} pos {} size {} failed\n",
                     filename, copied_size, coping_size
                 );
-                close(file_fd);
                 munmap(cache_va, CACHE_MAX);
                 return Err(format!("read file {} err", filename));
             }
@@ -690,7 +680,6 @@ fn copy_file_to_hypervisor(
     }
 
     unsafe {
-        close(file_fd);
         if munmap(cache_va, CACHE_MAX) != 0 {
             warn!("Failed to unmap cache va {:#x}", cache_va as u64);
         }
