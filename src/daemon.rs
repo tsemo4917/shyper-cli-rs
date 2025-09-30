@@ -8,18 +8,19 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PSL v2 for more details.
 
+use libc::{c_char, c_int, c_ulong, c_ulonglong, uintptr_t, SIGUSR1};
+use serde::{Deserialize, Serialize};
+use signal_hook::iterator::Signals;
 use std::{
     fs::{self, File},
     io::Read,
     mem, process,
 };
-use libc::{c_char, c_int, c_ulong, c_ulonglong, close, ioctl, open, uintptr_t, O_RDWR, SIGTERM, SIGUSR1};
-use serde::{Serialize, Deserialize};
-use log::{debug, error, info, warn};
-use signal_hook::iterator::Signals;
 
 use crate::{
-    blk::{mediated_blk_add, mediated_blk_init, mediated_blk_read, mediated_blk_write, MediatedBlkCfg, MED_BLK_LIST},
+    blk::{
+        mediated_blk_add, mediated_blk_init, mediated_blk_read, mediated_blk_write, MED_BLK_LIST,
+    },
     config::copy_img_file_to_memory,
     ioctl_arg::{IOCTL_SYS, IOCTL_SYS_GET_KERNEL_IMG_NAME},
     util::cstr_arr_to_string,
@@ -60,7 +61,6 @@ pub const HVC_VMM: usize = 1;
 pub const HVC_IVC: usize = 2;
 pub const HVC_MEDIATED: usize = 3;
 pub const HVC_CONFIG: usize = 0x11;
-#[cfg(feature = "unilib")]
 pub const HVC_UNILIB: usize = 0x12;
 
 // hvc_sys_event
@@ -149,7 +149,9 @@ fn sig_handle_event(signal: i32) {
 
     unsafe {
         // try_into cast &[u8] to &[u8; HVC_TYPE_SIZE]
-        hvc_type = mem::transmute::<[u8; HVC_TYPE_SIZE], HvcType>(buf[0..HVC_TYPE_SIZE].try_into().unwrap());
+        hvc_type = mem::transmute::<[u8; HVC_TYPE_SIZE], HvcType>(
+            buf[0..HVC_TYPE_SIZE].try_into().unwrap(),
+        );
     }
 
     match hvc_type.hvc_fid as usize {
@@ -157,7 +159,9 @@ fn sig_handle_event(signal: i32) {
             HVC_MEDIATED_USER_NOTIFY => {
                 let blk_arg;
                 unsafe {
-                    blk_arg = mem::transmute::<[u8; BLK_ARG_SIZE], BlkArg>(buf[0..BLK_ARG_SIZE].try_into().unwrap());
+                    blk_arg = mem::transmute::<[u8; BLK_ARG_SIZE], BlkArg>(
+                        buf[0..BLK_ARG_SIZE].try_into().unwrap(),
+                    );
                 }
                 if blk_arg.r#type == 0 {
                     mediated_blk_read(blk_arg.blk_id, blk_arg.sector, blk_arg.count);
@@ -174,8 +178,9 @@ fn sig_handle_event(signal: i32) {
             HVC_CONFIG_UPLOAD_KERNEL_IMAGE => {
                 let cfg_arg;
                 unsafe {
-                    cfg_arg =
-                        mem::transmute::<[u8; CONFIG_ARG_SIZE], CfgArg>(buf[0..CONFIG_ARG_SIZE].try_into().unwrap());
+                    cfg_arg = mem::transmute::<[u8; CONFIG_ARG_SIZE], CfgArg>(
+                        buf[0..CONFIG_ARG_SIZE].try_into().unwrap(),
+                    );
                 }
                 let fd_event = generate_hvc_mode(IOCTL_SYS, IOCTL_SYS_GET_KERNEL_IMG_NAME);
 
@@ -192,20 +197,31 @@ fn sig_handle_event(signal: i32) {
                 };
 
                 unsafe {
-                    let fd = open("/dev/shyper\0".as_ptr() as *const u8, O_RDWR);
-                    if ioctl(fd, fd_event as c_ulonglong, &mut name_arg as *mut NameArg as uintptr_t) != 0 {
-                        warn!("sig_handle_event: failed to get VM[{}] name\n", cfg_arg.vm_id);
-                        close(fd);
+                    if shyper_ioctl!(
+                        fd_event as c_ulonglong,
+                        &mut name_arg as *mut NameArg as uintptr_t
+                    ) != 0
+                    {
+                        warn!(
+                            "sig_handle_event: failed to get VM[{}] name\n",
+                            cfg_arg.vm_id
+                        );
                         return;
                     }
 
                     let img_name = cstr_arr_to_string(filename.as_slice());
-                    if let Err(err) = copy_img_file_to_memory(cfg_arg.vm_id, img_name, fd as u32) {
-                        warn!("sig_handle_event: failed to copy img file to memory: {}", err);
+                    if let Err(err) = copy_img_file_to_memory(
+                        cfg_arg.vm_id,
+                        img_name,
+                        crate::shyper::ShyperBackend::fd(),
+                    ) {
+                        warn!(
+                            "sig_handle_event: failed to copy img file to memory: {}",
+                            err
+                        );
                         return;
                     }
                     vmm_boot(cfg_arg.vm_id as u32);
-                    close(fd);
                     return;
                 }
             }
@@ -222,24 +238,22 @@ pub fn init_daemon() {
     let pid = process::id();
     let mut vmid: c_int = 0;
     unsafe {
-        let fd = open("/dev/shyper\0".as_ptr() as *const u8, O_RDWR);
-        if fd < 0 {
-            error!("open /dev/shyper failed: errcode = {}", *libc::__errno_location());
-            return;
-        }
         // Set process id, in case kernel module can send signal to cli
-        if ioctl(fd, 0x1002, c_ulong::from(pid)) < 0 {
-            error!("ioctl set pid failed: errcode = {}", *libc::__errno_location());
-            close(fd);
+        if shyper_ioctl!(0x1002, c_ulong::from(pid)) < 0 {
+            error!(
+                "ioctl set pid failed: errcode = {}",
+                *libc::__errno_location()
+            );
             return;
         }
         // Get vmid
-        if ioctl(fd, 0x1004, &mut vmid as *mut c_int) < 0 {
-            error!("ioctl get vmid failed: errcode = {}", *libc::__errno_location());
-            close(fd);
+        if shyper_ioctl!(0x1004, &mut vmid as *mut c_int) < 0 {
+            error!(
+                "ioctl get vmid failed: errcode = {}",
+                *libc::__errno_location()
+            );
             return;
         }
-        close(fd);
     }
 
     // Init mediated block partition
@@ -260,13 +274,14 @@ pub fn init_daemon() {
 
 pub fn config_daemon(path: String) -> Result<(), String> {
     info!("Start Shyper-cli daemon configure");
-    let json_str =
-        fs::read_to_string(path.clone()).map_err(|err| format!("Open json file {} err: {}", path.clone(), err))?;
-    let config: DaemonConfig = serde_json::from_str(&json_str).map_err(|err| format!("Parse json err: {}", err))?;
+    let json_str = fs::read_to_string(path.clone())
+        .map_err(|err| format!("Open json file {} err: {}", path.clone(), err))?;
+    let config = serde_json::from_str::<DaemonConfig>(&json_str)
+        .map_err(|err| format!("Parse json err: {}", err))?;
     debug!("config is {:?}", config);
 
     let mut disk_cnt = 0;
-    let mut disks: Vec<MediatedBlkCfg> = Vec::new();
+    let mut disks = Vec::new();
     for disk in config.mediated {
         // Add disk, and if error happens, skip it
         let result = mediated_blk_add(disk_cnt, disk.clone());
@@ -274,7 +289,11 @@ pub fn config_daemon(path: String) -> Result<(), String> {
             disk_cnt += 1;
             disks.push(result.unwrap());
         } else {
-            warn!("Add mediated disk {} failed: {}", disk, result.err().unwrap());
+            warn!(
+                "Add mediated disk {} failed: {}",
+                disk,
+                result.err().unwrap()
+            );
         }
     }
     MED_BLK_LIST.set(disks).unwrap();

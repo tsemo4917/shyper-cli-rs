@@ -9,42 +9,33 @@
 // See the Mulan PSL v2 for more details.
 
 use libc::{
-    c_void, close, ioctl, lseek, open, read, size_t, MAP_LOCKED, MAP_SHARED, O_RDONLY, O_RDWR, PROT_READ, PROT_WRITE,
-    SEEK_SET,
+    c_void, close, lseek, open, read, size_t, MAP_LOCKED, MAP_SHARED, O_RDONLY, O_RDWR, PROT_READ,
+    PROT_WRITE, SEEK_SET,
 };
 
 use crate::util::{bool_to_cint, file_size};
 
 pub fn sys_reboot(force: bool) {
     unsafe {
-        let fd = open("/dev/shyper\0".as_ptr() as *const u8, O_RDWR);
-        println!("sys reboot fd {}", fd);
-        if ioctl(fd, 0x0000, bool_to_cint(force)) != 0 {
+        if shyper_ioctl!(0x0000, bool_to_cint(force)) != 0 {
             println!("err: ioctl fail!");
         }
-        close(fd);
     }
 }
 
 pub fn sys_shutdown(force: bool) {
     unsafe {
-        let fd = open("/dev/shyper\0".as_ptr() as *const u8, O_RDWR);
-        println!("sys shutdown fd {}", fd);
-        if ioctl(fd, 0x0001, bool_to_cint(force)) != 0 {
+        if shyper_ioctl!(0x0001, bool_to_cint(force)) != 0 {
             println!("err: ioctl fail!");
         }
-        close(fd);
     }
 }
 
 pub fn sys_test() {
     unsafe {
-        let fd = open("/dev/shyper\0".as_ptr() as *const u8, O_RDWR);
-        println!("sys test fd {}", fd);
-        if ioctl(fd, 0x0004, 0) != 0 {
+        if shyper_ioctl!(0x0004, 0) != 0 {
             println!("err: ioctl fail!");
         }
-        close(fd);
     }
 }
 
@@ -55,7 +46,7 @@ fn update_image(path: String) -> u64 {
     }
 
     unsafe {
-        let share_mem_fd = open("/dev/hyper_update".as_ptr() as *const u8, O_RDWR);
+        let share_mem_fd = open("/dev/hyper_update".as_ptr() as *const _, O_RDWR);
         let addr = libc::mmap(
             0 as *mut c_void,
             0x8000000,
@@ -68,7 +59,7 @@ fn update_image(path: String) -> u64 {
             println!("[sys_update] update image mmap failed");
             return size;
         }
-        let image_fd = open(path.as_ptr() as *const u8, O_RDONLY);
+        let image_fd = open(path.as_ptr() as *const _, O_RDONLY);
 
         // mkimage file has 64B header
         lseek(image_fd, 64, SEEK_SET);
@@ -87,10 +78,8 @@ pub fn sys_update(path: String) {
     }
 
     unsafe {
-        let fd = open("/dev/shyper\0".as_ptr() as *const u8, O_RDWR);
-        if ioctl(fd, 0x0000, size) != 0 {
+        if shyper_ioctl!(0x0000, size) != 0 {
             println!("err: ioctl fail!");
         }
-        close(fd);
     }
 }

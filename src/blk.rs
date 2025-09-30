@@ -8,19 +8,12 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PSL v2 for more details.
 
-use std::{
-    fs,
-    os::linux::fs::MetadataExt,
-    process::{id, Command},
-    slice::from_raw_parts,
-    sync::Mutex,
-};
 use libc::{
-    c_uint, c_void, ioctl, memset, mmap, open, preadv2, size_t, MAP_ANONYMOUS, MAP_HUGETLB, MAP_PRIVATE, O_DIRECT,
+    c_uint, c_void, memset, mmap, open, size_t, MAP_ANONYMOUS, MAP_HUGETLB, MAP_PRIVATE, O_DIRECT,
     O_RDWR, PROT_READ, PROT_WRITE, S_IFBLK, S_IFMT,
 };
-use log::{info, warn};
 use once_cell::sync::OnceCell;
+use std::{fs, os::linux::fs::MetadataExt, process::Command, slice::from_raw_parts, sync::Mutex};
 
 use crate::{
     daemon::generate_hvc_mode,
@@ -30,8 +23,6 @@ use crate::{
 
 pub const HUGE_TLB_MAX: usize = 32 * 1024 * 1024;
 pub const BLOCK_SIZE: usize = 512;
-
-pub static SHYPER_FD: OnceCell<i32> = OnceCell::new();
 
 #[derive(Debug, Clone)]
 #[repr(C)]
@@ -50,7 +41,7 @@ pub struct MediatedBlkCfg {
 
 // Set this only once in the config_daemon
 pub static MED_BLK_LIST: OnceCell<Vec<MediatedBlkCfg>> = OnceCell::new();
-pub static IMG_FILE_FDS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+static IMG_FILE_FDS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
 
 // Read the count blocks of the blk id starting from the lba sector
 // Note: do not exceed cache_size!
@@ -69,15 +60,20 @@ fn blk_read(blk_id: u16, lba: u64, mut count: u64) {
         count = blk_cfg.dma_block_max;
     }
 
-    let iov = libc::iovec {
-        iov_base: blk_cfg.cache_va as *mut c_void,
-        iov_len: count as usize * BLOCK_SIZE,
-    };
     unsafe {
-        let read_len = preadv2(*img_file, &iov, 1, lba as i64 * BLOCK_SIZE as i64, 0);
+        let read_len = libc::pread(
+            *img_file,
+            blk_cfg.cache_va as *mut c_void,
+            count as usize * BLOCK_SIZE,
+            lba as i64 * BLOCK_SIZE as i64,
+        );
 
         if read_len < 0 {
-            warn!("read lba {:#x} size {:#x} failed!", lba, count * BLOCK_SIZE as u64);
+            warn!(
+                "read lba {:#x} size {:#x} failed!",
+                lba,
+                count * BLOCK_SIZE as u64
+            );
         } else if read_len != (count as isize * BLOCK_SIZE as isize) {
             warn!(
                 "read lba {:#x} size {:#x} failed! read_len = {:#x}",
@@ -112,7 +108,11 @@ fn blk_write(blk_id: u16, lba: u64, mut count: u64) {
         );
 
         if write_len < 0 {
-            warn!("write lba {:#x} size {:#x} failed!", lba, count * BLOCK_SIZE as u64);
+            warn!(
+                "write lba {:#x} size {:#x} failed!",
+                lba,
+                count * BLOCK_SIZE as u64
+            );
         } else if write_len != (count as isize * BLOCK_SIZE as isize) {
             warn!(
                 "write lba {:#x} size {:#x} failed! write_len = {:#x}",
@@ -169,13 +169,13 @@ pub fn mediated_blk_init() {
     // mount hugetlbfs
     // mkdir /mnt/huge
     // mount -t hugetlbfs -o pagesize=32M none /mnt/huge
-    let mut med_blk_list = MED_BLK_LIST.get().expect("med_blk_list is None");
+    let med_blk_list = MED_BLK_LIST.get().expect("med_blk_list is None");
     let mut img_file_fds = IMG_FILE_FDS.lock().unwrap();
     if med_blk_list.is_empty() {
         warn!("NO mediated block device!");
     }
 
-    for i in 0..med_blk_list.len() {
+    for _ in 0..med_blk_list.len() {
         img_file_fds.push(-1);
     }
 
@@ -205,15 +205,6 @@ pub fn mediated_blk_init() {
         return;
     }
 
-    unsafe {
-        let fd = libc::open("/dev/shyper\0".as_ptr() as *const u8, libc::O_RDWR);
-        SHYPER_FD.set(fd).unwrap();
-        if fd < 0 {
-            warn!("open /dev/shyper failed");
-            return;
-        }
-    }
-
     for i in 0..med_blk_list.len() {
         let cache_size = med_blk_list[i].cache_size;
         let block_dev_path = med_blk_list[i].block_dev_path.clone();
@@ -231,7 +222,7 @@ pub fn mediated_blk_init() {
         );
 
         unsafe {
-            let fd = open(block_dev_path.as_ptr() as *const u8, O_RDWR | O_DIRECT);
+            let fd = open(block_dev_path.as_ptr() as *const _, O_RDWR | O_DIRECT);
             if fd < 0 {
                 warn!(
                     "open block device {} failed: errcode = {}",
@@ -252,10 +243,9 @@ pub fn mediated_blk_init() {
 
         let request = generate_hvc_mode(IOCTL_SYS, IOCTL_SYS_APPEND_MED_BLK);
         unsafe {
-            if ioctl(
-                *SHYPER_FD.get().unwrap(),
+            if shyper_ioctl!(
                 request as u64,
-                &med_blk_list[i] as *const MediatedBlkCfg as *mut c_void,
+                &med_blk_list[i] as *const MediatedBlkCfg as *mut c_void
             ) != 0
             {
                 warn!("ioctl append mediated blk failed");
@@ -275,7 +265,7 @@ pub fn mediated_blk_init() {
 pub fn mediated_blk_read(blk_id: u16, lba: u64, count: u64) {
     blk_read(blk_id, lba, count);
 
-    let ret = unsafe { libc::ioctl(*SHYPER_FD.get().unwrap(), 0x0331, blk_id as c_uint) };
+    let ret = unsafe { shyper_ioctl!(0x0331, blk_id as c_uint) };
     if ret != 0 {
         warn!("Mediated blk read ioctl failed");
     }
@@ -284,7 +274,7 @@ pub fn mediated_blk_read(blk_id: u16, lba: u64, count: u64) {
 pub fn mediated_blk_write(blk_id: u16, lba: u64, count: u64) {
     blk_write(blk_id, lba, count);
 
-    let ret = unsafe { libc::ioctl(*SHYPER_FD.get().unwrap(), 0x0331, blk_id as c_uint) };
+    let ret = unsafe { shyper_ioctl!(0x0331, blk_id as c_uint) };
     if ret != 0 {
         warn!("Mediated blk read ioctl failed");
     }
@@ -307,7 +297,11 @@ pub fn mediated_blk_add(index: usize, dev: String) -> Result<MediatedBlkCfg, Str
         .map_err(|dev| format!("assign device {} err", dev))?;
 
     let nsec = ctx.logical_sectors();
-    info!("Shyper daemon add blk {} with {} sectors", dev.clone(), nsec);
+    info!(
+        "Shyper daemon add blk {} with {} sectors",
+        dev.clone(),
+        nsec
+    );
 
     let cache_va;
     let cache_size = HUGE_TLB_MAX as u64;
@@ -331,7 +325,7 @@ pub fn mediated_blk_add(index: usize, dev: String) -> Result<MediatedBlkCfg, Str
         return Err("check cache address failed".to_string());
     }
 
-    let phys_result = virt_to_phys_user(id(), cache_va as u64);
+    let phys_result = virt_to_phys_user(cache_va as u64);
     if let Err(err) = phys_result {
         warn!("virt_to_phys_user failed: {}", err);
         return Err(format!("virt_to_phys_user failed: {}", err));

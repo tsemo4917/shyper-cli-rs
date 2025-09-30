@@ -8,10 +8,16 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PSL v2 for more details.
 
+#[macro_use]
+mod shyper;
+
 mod blk;
+#[allow(unused)]
 mod config;
 mod config_arg;
+#[allow(unused)]
 mod daemon;
+#[allow(unused)]
 mod ioctl_arg;
 mod sys;
 mod util;
@@ -20,13 +26,14 @@ mod vmm;
 use std::path::Path;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use config::parse_vm_entry;
 use daemon::{config_daemon, init_daemon};
-use log::{error, info, warn};
 use sys::{sys_reboot, sys_shutdown, sys_test, sys_update};
 use vmm::{vmm_boot, vmm_getvmid, vmm_list_vm_info, vmm_reboot, vmm_remove};
 
 use crate::config::config_add_vm;
+
+#[macro_use]
+extern crate log;
 
 #[derive(Parser)]
 #[command(
@@ -164,7 +171,9 @@ fn exec_vm_cmd(subcmd: VmSubCmd) {
 
 fn main() {
     // configure logger and set log level
-    env_logger::Builder::new().filter_level(log::LevelFilter::Info).init();
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Info)
+        .init();
 
     let cli = CLI::parse();
     match cli.subcmd {

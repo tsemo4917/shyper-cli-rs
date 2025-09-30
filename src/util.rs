@@ -60,11 +60,11 @@ pub fn string_to_cstr_arr(s: String) -> [u8; 32] {
     buf
 }
 
-// convert program of pid's virtual address to physical address
 // returns paddr
-pub fn virt_to_phys_user(pid: u32, vaddr: u64) -> Result<u64, String> {
-    let pagemap_path = format!("/proc/{}/pagemap", pid);
-    let mut file = File::open(&pagemap_path).map_err(|err| format!("Open {} err: {}", &pagemap_path, err))?;
+pub fn virt_to_phys_user(vaddr: u64) -> Result<u64, String> {
+    let pagemap_path = "/proc/self/pagemap";
+    let mut file =
+        File::open(&pagemap_path).map_err(|err| format!("Open {} err: {}", &pagemap_path, err))?;
 
     let page_size: usize = unsafe { sysconf(_SC_PAGE_SIZE) } as usize;
     let offset = ((vaddr as usize) / page_size) * (mem::size_of::<c_ulong>() as usize);
@@ -78,7 +78,12 @@ pub fn virt_to_phys_user(pid: u32, vaddr: u64) -> Result<u64, String> {
 
     let mut pagemap_entry: c_ulong = 0;
     if file
-        .read_exact(unsafe { from_raw_parts_mut(&mut pagemap_entry as *mut _ as *mut u8, mem::size_of::<c_ulong>()) })
+        .read_exact(unsafe {
+            from_raw_parts_mut(
+                &mut pagemap_entry as *mut _ as *mut u8,
+                mem::size_of::<c_ulong>(),
+            )
+        })
         .is_err()
     {
         return Err(format!("Read page table entry err"));
@@ -121,23 +126,14 @@ pub fn check_cache_address(cache_va: *mut c_void, len: u64) -> Result<(), String
     Ok(())
 }
 
-pub fn string_to_u64(s: String) -> Result<u64, String> {
+pub fn string_to_u64(s: String) -> Result<u64, std::num::ParseIntError> {
     let s = s.trim().to_string();
-    if s.starts_with("0x") {
-        match u64::from_str_radix(&s[2..], 16) {
-            Ok(num) => Ok(num),
-            Err(_) => Err(format!("Not hex string: {}", s)),
-        }
+    let (src, radix) = if s.starts_with("0x") {
+        (&s[2..], 16)
     } else if s.starts_with("0b") {
-        match u64::from_str_radix(&s[2..], 2) {
-            Ok(num) => Ok(num),
-            Err(_) => Err(format!("Not binary string: {}", s)),
-        }
+        (&s[2..], 2)
     } else {
-        // must be decimal
-        match u64::from_str_radix(&s, 10) {
-            Ok(num) => Ok(num),
-            Err(_) => Err(format!("String {} is not in hex/bin/decimal format!", s)),
-        }
-    }
+        (s.as_str(), 10)
+    };
+    u64::from_str_radix(src, radix)
 }
