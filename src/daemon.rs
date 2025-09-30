@@ -20,7 +20,7 @@ use std::{
 
 use crate::{
     blk::{
-        mediated_blk_add, mediated_blk_init, mediated_blk_read, mediated_blk_write, MED_BLK_LIST,
+        mediated_blk_add, mediated_blk_init, mediated_blk_read, mediated_blk_write, MediatedBlkCfg,
     },
     config::copy_img_file_to_memory,
     ioctl_arg::{IOCTL_SYS, IOCTL_SYS_GET_KERNEL_IMG_NAME},
@@ -232,7 +232,7 @@ fn sig_handle_event(signal: i32) {
     }
 }
 
-pub fn init_daemon() {
+pub fn init_daemon(disk_list: Vec<MediatedBlkCfg>) {
     // IGNORE: get semaphore and file_lock
     // IGNORE: create migrate fifo file
     // IGNORE: IVC Init
@@ -254,7 +254,7 @@ pub fn init_daemon() {
     // Init mediated block partition
     if vmid == 0 {
         info!("VM[{}] start to init blk service\n", vmid);
-        mediated_blk_init();
+        mediated_blk_init(disk_list);
     }
     info!("VM[{}] daemon process init success\n", vmid);
 
@@ -267,7 +267,7 @@ pub fn init_daemon() {
     }
 }
 
-pub fn config_daemon(path: String) -> Result<(), Box<dyn std::error::Error>> {
+pub fn config_daemon(path: String) -> Result<Vec<MediatedBlkCfg>, Box<dyn std::error::Error>> {
     info!("Start Shyper-cli daemon configure");
     let json_str = fs::read_to_string(path.clone())?;
     let config = serde_json::from_str::<DaemonConfig>(&json_str)?;
@@ -289,9 +289,8 @@ pub fn config_daemon(path: String) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-    MED_BLK_LIST.set(disks).unwrap();
 
     info!("daemon configure {} mediated disk(s)", disk_cnt);
     info!("daemon configuration finished");
-    Ok(())
+    Ok(disks)
 }

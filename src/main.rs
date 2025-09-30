@@ -146,8 +146,8 @@ fn exec_system_cmd(subcmd: SystemSubCmd) {
         SystemSubCmd::Update { image } => sys_update(image),
         SystemSubCmd::Test {} => sys_test(),
         SystemSubCmd::Daemon { config } => {
-            config_daemon(config).unwrap();
-            init_daemon();
+            let disk_list = config_daemon(config).unwrap();
+            init_daemon(disk_list);
         }
     }
 }

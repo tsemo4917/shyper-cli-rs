@@ -16,7 +16,6 @@ use nix::{
     fcntl::{open, OFlag},
     sys::{stat::Mode, uio},
 };
-use once_cell::sync::OnceCell;
 use std::{
     fs,
     os::{
@@ -25,7 +24,7 @@ use std::{
     },
     process::Command,
     slice,
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
 };
 
 use crate::{
@@ -53,7 +52,7 @@ pub struct MediatedBlkCfg {
 }
 
 // Set this only once in the config_daemon
-pub static MED_BLK_LIST: OnceCell<Vec<MediatedBlkCfg>> = OnceCell::new();
+static MED_BLK_LIST: OnceLock<Vec<MediatedBlkCfg>> = OnceLock::new();
 static IMG_FILE_FDS: Mutex<Vec<RawFd>> = Mutex::new(Vec::new());
 
 // Read the count blocks of the blk id starting from the lba sector
@@ -81,21 +80,16 @@ fn blk_read(blk_id: u16, lba: u64, mut count: u64) {
 
     match uio::pread(fd, buf, lba as i64 * BLOCK_SIZE as i64) {
         Ok(read_len) => {
-            if read_len != (count as usize * BLOCK_SIZE) {
+            if read_len != buf.len() {
                 warn!(
                     "read lba {:#x} size {:#x} failed! read_len = {:#x}",
                     lba,
-                    count * BLOCK_SIZE as u64,
+                    buf.len(),
                     read_len
                 );
             }
         }
-        Err(err) => warn!(
-            "read lba {:#x} size {:#x} failed: {}!",
-            lba,
-            count * BLOCK_SIZE as u64,
-            err
-        ),
+        Err(err) => warn!("read lba {:#x} size {:#x} failed: {}!", lba, buf.len(), err),
     }
 }
 
@@ -120,11 +114,11 @@ fn blk_write(blk_id: u16, lba: u64, mut count: u64) {
 
     match uio::pwrite(fd, buf, lba as i64 * BLOCK_SIZE as i64) {
         Ok(write_len) => {
-            if write_len != (count as usize * BLOCK_SIZE) {
+            if write_len != buf.len() {
                 warn!(
                     "write lba {:#x} size {:#x} failed! write_len = {:#x}",
                     lba,
-                    count * BLOCK_SIZE as u64,
+                    buf.len(),
                     write_len
                 );
             }
@@ -132,7 +126,7 @@ fn blk_write(blk_id: u16, lba: u64, mut count: u64) {
         Err(err) => warn!(
             "write lba {:#x} size {:#x} failed: {}!",
             lba,
-            count * BLOCK_SIZE as u64,
+            buf.len(),
             err
         ),
     }
@@ -172,21 +166,19 @@ fn blk_try_rw(blk_id: u16) -> Result<(), String> {
     Ok(())
 }
 
-pub fn mediated_blk_init() {
+pub fn mediated_blk_init(med_blk_list: Vec<MediatedBlkCfg>) {
     // Kernel boot options cmdline:
     // default_hugepagesz=32M hugepagesz=32M hugepages=1
     // mount hugetlbfs
     // mkdir /mnt/huge
     // mount -t hugetlbfs -o pagesize=32M none /mnt/huge
-    let med_blk_list = MED_BLK_LIST.get().expect("med_blk_list is None");
     let mut img_file_fds = IMG_FILE_FDS.lock().unwrap();
     if med_blk_list.is_empty() {
         warn!("NO mediated block device!");
+        return;
     }
 
-    for _ in 0..med_blk_list.len() {
-        img_file_fds.push(-1);
-    }
+    img_file_fds.resize(med_blk_list.len(), -1);
 
     let output = Command::new("mkdir")
         .arg("-p")
@@ -214,10 +206,10 @@ pub fn mediated_blk_init() {
         return;
     }
 
-    for i in 0..med_blk_list.len() {
-        let cache_size = med_blk_list[i].cache_size;
-        let block_dev_path = cstr_arr_to_string(med_blk_list[i].block_dev_path.as_slice());
-        let name = cstr_arr_to_string(med_blk_list[i].name.as_slice());
+    for (i, cfg) in med_blk_list.iter().enumerate() {
+        let cache_size = cfg.cache_size;
+        let block_dev_path = cstr_arr_to_string(cfg.block_dev_path.as_slice());
+        let name = cstr_arr_to_string(cfg.name.as_slice());
         info!(
             "Shyper daemon init blk {} with cache size {}",
             name, cache_size
@@ -225,7 +217,7 @@ pub fn mediated_blk_init() {
 
         info!(
             "Shyper daemon init blk {} va {:#x} with cache pa {:#x}",
-            name, med_blk_list[i].cache_va as u64, med_blk_list[i].cache_ipa as u64
+            name, cfg.cache_va as u64, cfg.cache_ipa as u64
         );
 
         match open(
@@ -248,11 +240,7 @@ pub fn mediated_blk_init() {
 
         let request = generate_hvc_mode(IOCTL_SYS, IOCTL_SYS_APPEND_MED_BLK);
         unsafe {
-            if shyper_ioctl!(
-                request as u64,
-                &med_blk_list[i] as *const MediatedBlkCfg as *mut c_void
-            ) != 0
-            {
+            if shyper_ioctl!(request as u64, cfg as *const MediatedBlkCfg as *mut c_void) != 0 {
                 warn!("ioctl append mediated blk failed");
                 return;
             }
@@ -260,7 +248,7 @@ pub fn mediated_blk_init() {
 
         info!(
             "Shyper daemon init blk {} success",
-            cstr_arr_to_string(med_blk_list[i].name.clone().as_slice())
+            cstr_arr_to_string(cfg.name.as_slice())
         );
     }
 }
