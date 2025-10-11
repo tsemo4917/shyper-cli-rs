@@ -27,6 +27,8 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+use shyper::MediatedBlkCfg;
+
 use crate::{
     daemon::generate_hvc_mode,
     ioctl_arg::{IOCTL_SYS, IOCTL_SYS_APPEND_MED_BLK},
@@ -35,21 +37,6 @@ use crate::{
 
 pub const HUGE_TLB_MAX: usize = 32 * 1024 * 1024;
 pub const BLOCK_SIZE: usize = 512;
-
-#[derive(Debug, Clone)]
-#[repr(C)]
-pub struct MediatedBlkCfg {
-    name: [u8; 32],
-    block_dev_path: [u8; 32],
-    block_num: u64,
-    dma_block_max: u64,
-    cache_size: u64,
-    idx: u16,
-    pcache: bool,
-    cache_va: u64,
-    cache_ipa: u64,
-    cache_pa: u64,
-}
 
 // Set this only once in the config_daemon
 static MED_BLK_LIST: OnceLock<Vec<MediatedBlkCfg>> = OnceLock::new();
@@ -66,12 +53,12 @@ fn blk_read(blk_id: u16, lba: u64, mut count: u64) {
 
     let fd = unsafe { BorrowedFd::borrow_raw(*img_file) };
 
-    if count > blk_cfg.dma_block_max {
+    if count > blk_cfg.dma_block_max as u64 {
         warn!(
             "blk_read count {} > dma_block_max {}, shrink count to {}",
             count, blk_cfg.dma_block_max, blk_cfg.dma_block_max
         );
-        count = blk_cfg.dma_block_max;
+        count = blk_cfg.dma_block_max as u64;
     }
 
     let buf = unsafe {
@@ -101,12 +88,12 @@ fn blk_write(blk_id: u16, lba: u64, mut count: u64) {
 
     let fd = unsafe { BorrowedFd::borrow_raw(*img_file) };
 
-    if count > blk_cfg.dma_block_max {
+    if count > blk_cfg.dma_block_max as u64 {
         warn!(
             "blk_write count {} > dma_block_max {}, shrink count to {}",
             count, blk_cfg.dma_block_max, blk_cfg.dma_block_max
         );
-        count = blk_cfg.dma_block_max;
+        count = blk_cfg.dma_block_max as u64;
     }
 
     let buf =
@@ -321,13 +308,13 @@ pub fn mediated_blk_add(index: usize, dev: String) -> Result<MediatedBlkCfg, Str
     let cfg = MediatedBlkCfg {
         name: string_to_cstr_arr(format!("MEDBLK{}", index)),
         block_dev_path: string_to_cstr_arr(dev.clone()),
-        block_num: nsec,
-        dma_block_max: cache_size / BLOCK_SIZE as u64,
-        cache_size,
+        block_num: nsec as usize,
+        dma_block_max: cache_size as usize / BLOCK_SIZE,
+        cache_size: cache_size as usize,
         idx: index as u16,
         pcache: false,
-        cache_va: cache_va as u64,
-        cache_ipa: phys_result.unwrap(),
+        cache_va: cache_va as usize,
+        cache_ipa: phys_result.unwrap() as usize,
         cache_pa: 0,
     };
     ctx.deassign_device(false)

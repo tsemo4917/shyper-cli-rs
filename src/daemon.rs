@@ -19,14 +19,14 @@ use std::{
 };
 
 use crate::{
-    blk::{
-        mediated_blk_add, mediated_blk_init, mediated_blk_read, mediated_blk_write, MediatedBlkCfg,
-    },
+    blk::{mediated_blk_add, mediated_blk_init, mediated_blk_read, mediated_blk_write},
     config::copy_img_file_to_memory,
     ioctl_arg::{IOCTL_SYS, IOCTL_SYS_GET_KERNEL_IMG_NAME},
     util::cstr_arr_to_string,
     vmm::vmm_boot,
 };
+
+use shyper::MediatedBlkCfg;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct DaemonConfig {
@@ -146,24 +146,19 @@ fn sig_handle_event(signal: i32) {
     if n == 0 {
         warn!("Lost signal {}!", signal);
     }
-    let hvc_type: HvcType;
-
-    unsafe {
+    let hvc_type = unsafe {
         // try_into cast &[u8] to &[u8; HVC_TYPE_SIZE]
-        hvc_type = mem::transmute::<[u8; HVC_TYPE_SIZE], HvcType>(
-            buf[0..HVC_TYPE_SIZE].try_into().unwrap(),
-        );
-    }
+        mem::transmute::<[u8; HVC_TYPE_SIZE], HvcType>(buf[0..HVC_TYPE_SIZE].try_into().unwrap())
+    };
 
     match hvc_type.hvc_fid as usize {
         HVC_MEDIATED => match hvc_type.hvc_event as usize {
             HVC_MEDIATED_USER_NOTIFY => {
-                let blk_arg;
-                unsafe {
-                    blk_arg = mem::transmute::<[u8; BLK_ARG_SIZE], BlkArg>(
+                let blk_arg = unsafe {
+                    mem::transmute::<[u8; BLK_ARG_SIZE], BlkArg>(
                         buf[0..BLK_ARG_SIZE].try_into().unwrap(),
-                    );
-                }
+                    )
+                };
                 if blk_arg.r#type == 0 {
                     mediated_blk_read(blk_arg.blk_id, blk_arg.sector, blk_arg.count);
                 } else if blk_arg.r#type == 1 {

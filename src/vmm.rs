@@ -10,20 +10,11 @@
 
 use std::mem;
 
+use shyper::{VMInfo, VM_NUM_MAX};
+
 use crate::util::cstr_arr_to_string;
 
-pub const NAME_MAX_LEN: usize = 32;
-const VM_NUM_MAX: usize = 16;
 const VM_PAGE_SIZE: usize = 0x1000;
-
-#[repr(C)]
-#[derive(Clone)]
-struct VMInfo {
-    pub id: u32,
-    pub vm_name: [u8; NAME_MAX_LEN],
-    pub vm_type: u32,
-    pub vm_state: u32,
-}
 
 const VM_T_LINUX: u32 = 0;
 const VM_T_BARE_MATEL_APP: u32 = 1;
