@@ -396,7 +396,7 @@ pub fn config_vm_info(vm_cfg: VmConfigEntry, vm_id: u64, fd: i32) -> Result<(), 
                 0
             },
             color_array_addr: if has_color {
-                vm_cfg.memory.colors.unwrap().as_ptr() as *const u64 as u64
+                vm_cfg.memory.colors.as_ref().unwrap().as_ptr() as *const u64 as u64
             } else {
                 0
             },

@@ -192,7 +192,7 @@ fn sig_handle_event(signal: i32) {
                 }
 
                 let filename: [u8; 64] = [0; 64];
-                let mut name_arg: NameArg = NameArg {
+                let mut name_arg = NameArg {
                     vm_id: cfg_arg.vm_id,
                     name_addr: filename.as_ptr() as *mut c_char,
                 };
@@ -209,22 +209,21 @@ fn sig_handle_event(signal: i32) {
                         );
                         return;
                     }
+                }
 
-                    let img_name = cstr_arr_to_string(filename.as_slice());
-                    if let Err(err) = copy_img_file_to_memory(
-                        cfg_arg.vm_id,
-                        img_name,
-                        crate::shyper::ShyperBackend::fd(),
-                    ) {
-                        warn!(
-                            "sig_handle_event: failed to copy img file to memory: {}",
-                            err
-                        );
-                        return;
-                    }
-                    vmm_boot(cfg_arg.vm_id as u32);
+                let img_name = cstr_arr_to_string(filename.as_slice());
+                if let Err(err) = copy_img_file_to_memory(
+                    cfg_arg.vm_id,
+                    img_name,
+                    crate::shyper::ShyperBackend::fd(),
+                ) {
+                    warn!(
+                        "sig_handle_event: failed to copy img file to memory: {}",
+                        err
+                    );
                     return;
                 }
+                vmm_boot(cfg_arg.vm_id as u32);
             }
             _ => return,
         },

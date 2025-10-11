@@ -47,6 +47,7 @@ pub fn vmm_boot(vm_id: u32) {
     }
 }
 
+#[allow(unused)]
 pub fn vmm_shutdown(force: bool, vm_id: u32) {
     unsafe {
         let arg: u64 = match force {

@@ -155,17 +155,16 @@ fn exec_system_cmd(subcmd: SystemSubCmd) {
 fn exec_vm_cmd(subcmd: VmSubCmd) {
     match subcmd {
         VmSubCmd::List {} => vmm_list_vm_info(),
-        VmSubCmd::Boot { vmid, display } => vmm_boot(vmid),
+        VmSubCmd::Boot { vmid, display: _ } => vmm_boot(vmid),
         VmSubCmd::Reboot { vmid, force } => vmm_reboot(force, vmid),
         VmSubCmd::Remove { vmid } => vmm_remove(vmid),
-        VmSubCmd::Getdefconfig { vmid } => todo!(),
         VmSubCmd::Config { config } => {
             if let Err(err) = config_add_vm(config) {
                 error!("Add vm failed: {}", err);
             }
         }
-        VmSubCmd::Delconfig { vmid, force } => todo!(),
         VmSubCmd::Getvmid {} => vmm_getvmid(),
+        _ => todo!(),
     }
 }
 
