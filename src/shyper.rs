@@ -16,14 +16,11 @@ impl ShyperBackend {
 
     fn get_instance() -> &'static Self {
         SHYPER_BACKEND.get_or_init(|| {
-            let file = match OpenOptions::new()
+            let file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .open(Self::SHYPER_BACKEND_PATH)
-            {
-                Ok(file) => file,
-                Err(err) => panic!("{} open failed: {}", Self::SHYPER_BACKEND_PATH, err),
-            };
+                .unwrap_or_else(|err| panic!("{} open failed: {}", Self::SHYPER_BACKEND_PATH, err));
             Self { file }
         })
     }
