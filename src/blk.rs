@@ -10,17 +10,16 @@
 
 use libc::{
     c_uint, c_void, mmap, size_t, MAP_ANONYMOUS, MAP_HUGETLB, MAP_PRIVATE, PROT_READ, PROT_WRITE,
-    S_IFBLK, S_IFMT,
 };
 use nix::{
     fcntl::{open, OFlag},
     sys::{stat::Mode, uio},
 };
 use std::{
-    fs,
+    fs::File,
     os::{
-        fd::{BorrowedFd, RawFd},
-        linux::fs::MetadataExt,
+        fd::{AsRawFd, BorrowedFd, RawFd},
+        unix::fs::FileTypeExt,
     },
     process::Command,
     slice,
@@ -259,23 +258,36 @@ pub fn mediated_blk_write(blk_id: u16, lba: u64, count: u64) {
     }
 }
 
+// Generate ioctl function
+const BLKGETSIZE64_CODE: u8 = 0x12; // Defined in linux/fs.h
+const BLKGETSIZE64_SEQ: u8 = 114;
+nix::ioctl_read!(ioctl_blkgetsize64, BLKGETSIZE64_CODE, BLKGETSIZE64_SEQ, u64);
+
+fn blockdev_size(file: &File) -> Option<u64> {
+    let fd = file.as_raw_fd();
+    let mut size = 0_u64;
+    let ret = unsafe { ioctl_blkgetsize64(fd, &mut size as *mut u64) };
+    if ret.is_err() {
+        return None;
+    }
+    Some(size)
+}
+
 // Add a mediated blk
 pub fn mediated_blk_add(index: usize, dev: String) -> Result<MediatedBlkCfg, String> {
-    let metadata = fs::metadata(dev.clone()).map_err(|x| format!("metadata err: {}", x))?;
+    let file = File::open(dev.clone()).map_err(|x| format!("open {} err: {}", dev, x))?;
 
-    let file_type = metadata.st_mode() & (S_IFMT as u32);
-    if file_type != S_IFBLK {
-        warn!(
-            "{} is not a block device, but we can also use {} as a img file",
-            dev, dev
-        );
-    }
+    let metadata = file
+        .metadata()
+        .map_err(|x| format!("metadata err: {}", x))?;
 
-    let ctx = fdisk::Context::new();
-    ctx.assign_device(dev.clone(), true)
-        .map_err(|dev| format!("assign device {} err", dev))?;
+    let size = if metadata.file_type().is_block_device() {
+        blockdev_size(&file).ok_or(format!("blockdev_size {} err", dev))?
+    } else {
+        metadata.len()
+    };
 
-    let nsec = ctx.logical_sectors();
+    let nsec = size / BLOCK_SIZE as u64;
     info!(
         "Shyper daemon add blk {} with {} sectors",
         dev.clone(),
@@ -317,8 +329,6 @@ pub fn mediated_blk_add(index: usize, dev: String) -> Result<MediatedBlkCfg, Str
         cache_ipa: phys_result.unwrap() as usize,
         cache_pa: 0,
     };
-    ctx.deassign_device(false)
-        .map_err(|x| format!("deassign device {} err: {}", dev, x))?;
 
     Ok(cfg)
 }

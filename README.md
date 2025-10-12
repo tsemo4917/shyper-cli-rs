@@ -6,9 +6,9 @@ Before you compile the cli tool source, you should **move cli directory to a loc
 
 First, create a Linux distribution environment for one architecture (AArch64 or RISCV64).
 
-Second, apt install the following dependency under this environment:
+~~Second, apt install the following dependency under this environment:~~
 
-* libfdisk-dev
+~~* libfdisk-dev~~
 
 Third, locate the directory to the cli, then run `make`.
 
