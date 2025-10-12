@@ -1,11 +1,13 @@
 use std::{
     fs::{File, OpenOptions},
+    io::Read,
     os::fd::{AsRawFd, RawFd},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
 };
 
 pub struct ShyperBackend {
-    file: File,
+    file: Mutex<File>,
+    fd: RawFd,
 }
 
 /// Singleton Module
@@ -21,12 +23,20 @@ impl ShyperBackend {
                 .write(true)
                 .open(Self::SHYPER_BACKEND_PATH)
                 .unwrap_or_else(|err| panic!("{} open failed: {}", Self::SHYPER_BACKEND_PATH, err));
-            Self { file }
+            let fd = file.as_raw_fd();
+            Self {
+                file: Mutex::new(file),
+                fd,
+            }
         })
     }
 
     pub fn fd() -> RawFd {
-        Self::get_instance().file.as_raw_fd()
+        Self::get_instance().fd
+    }
+
+    pub fn read(buf: &mut [u8]) -> std::io::Result<usize> {
+        Self::get_instance().file.lock().unwrap().read(buf)
     }
 }
 

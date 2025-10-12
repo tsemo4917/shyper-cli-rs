@@ -134,14 +134,12 @@ pub fn generate_hvc_mode(fid: usize, event: usize) -> usize {
 fn sig_handle_event(signal: i32) {
     // info!("Receive signal {}", signal);
 
-    let mut file = File::open("/dev/shyper").unwrap();
     const HVC_TYPE_SIZE: usize = mem::size_of::<HvcType>();
     const BLK_ARG_SIZE: usize = mem::size_of::<BlkArg>();
     const CONFIG_ARG_SIZE: usize = mem::size_of::<CfgArg>();
     let mut buf: [u8; 256] = [0; 256];
 
-    let n = file.read(&mut buf).unwrap();
-    drop(file);
+    let n = crate::shyper::ShyperBackend::read(&mut buf).unwrap();
 
     if n == 0 {
         warn!("Lost signal {}!", signal);
